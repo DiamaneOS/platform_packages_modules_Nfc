@@ -16,7 +16,10 @@
 
 package com.android.nfc;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -82,10 +85,14 @@ public class NfcWatchdogTest {
     @Test
     public void testStopMonitoring() {
         AlarmManager alarmManager = mock(AlarmManager.class);
+        PendingIntent pendingIntent = mock(PendingIntent.class);
         when(mContext.getSystemService(AlarmManager.class)).thenReturn(alarmManager);
+        when(PendingIntent.getBroadcast(any(), anyInt(), any(), anyInt()))
+                .thenReturn(pendingIntent);
 
         mNfcWatchdog.stopMonitoring();
-        verify(alarmManager).cancelAll();
+        verify(alarmManager).cancel(pendingIntent);
+        verify(alarmManager, never()).cancelAll();
     }
 
     @Test

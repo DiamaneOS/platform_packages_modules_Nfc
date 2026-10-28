@@ -132,8 +132,12 @@ public class NfcWatchdog extends BroadcastReceiver {
 
     void stopMonitoring() {
         AlarmManager alarmManager = mContext.getSystemService(AlarmManager.class);
-        if (alarmManager != null) {
-            alarmManager.cancelAll();
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(mContext, 0,
+                new Intent(ACTION_WATCHDOG),
+                PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_NO_CREATE);
+        // Not cancelAll(): NfcAutoOff has an alarm too.
+        if (alarmManager != null && pendingIntent != null) {
+            alarmManager.cancel(pendingIntent);
         }
     }
 }
