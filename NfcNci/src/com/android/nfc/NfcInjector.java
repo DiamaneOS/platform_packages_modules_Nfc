@@ -319,6 +319,16 @@ public class NfcInjector {
         return SystemClock.elapsedRealtime();
     }
 
+    /** NFC_AUTO_OFF in ms, 0 when off or not readable. */
+    public long getNfcAutoOffTimeoutMillis() {
+        try {
+            return Settings.Global.getLong(mContext.getContentResolver(), NfcAutoOff.SETTING, 0);
+        } catch (SecurityException e) {
+            Log.w(TAG, "getNfcAutoOffTimeoutMillis: " + e);
+            return 0;
+        }
+    }
+
     /**
      * Returns nanoseconds since boot, including time spent in sleep.
      *

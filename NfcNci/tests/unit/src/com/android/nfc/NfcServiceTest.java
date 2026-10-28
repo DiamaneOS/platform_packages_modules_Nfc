@@ -367,6 +367,46 @@ public final class NfcServiceTest {
         disableAndVerify();
     }
 
+    private AlarmManager.OnAlarmListener enableWithAutoOffAt(long now, long timeout)
+            throws Exception {
+        when(mNfcInjector.getNfcAutoOffTimeoutMillis()).thenReturn(timeout);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(now);
+        when(mApplication.getPackageName()).thenReturn("com.android.nfc");
+        when(mScreenStateHelper.checkScreenState(anyBoolean()))
+                .thenReturn(ScreenStateHelper.SCREEN_STATE_OFF_LOCKED);
+        enableAndVerify();
+        ArgumentCaptor<AlarmManager.OnAlarmListener> alarm =
+                ArgumentCaptor.forClass(AlarmManager.OnAlarmListener.class);
+        verify(mAlarmManager).setExact(eq(AlarmManager.ELAPSED_REALTIME_WAKEUP), eq(now + timeout),
+                anyString(), alarm.capture(), any(Handler.class));
+        when(mDeviceHost.deinitialize()).thenReturn(true);
+        return alarm.getValue();
+    }
+
+    @Test
+    public void testAutoOff_turnsOffWhenUnusedWithTheScreenOff() throws Exception {
+        AlarmManager.OnAlarmListener alarm = enableWithAutoOffAt(1_000, 60_000);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(61_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
+    }
+
+    @Test
+    public void testAutoOff_staysOnWhileAReaderFieldIsPresent() throws Exception {
+        AlarmManager.OnAlarmListener alarm = enableWithAutoOffAt(1_000, 60_000);
+        mNfcService.onRemoteFieldActivated();
+        mLooper.dispatchAll();
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(61_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mAlarmManager).set(eq(AlarmManager.ELAPSED_REALTIME),
+                eq(61_000L + NfcAutoOffRule.BUSY_RETRY_MS), anyString(), any(), any(Handler.class));
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+    }
+
     @Test
     public void testEnable_clearsObjectMaps() throws Exception {
         // Add mock objects to object maps

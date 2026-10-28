@@ -280,6 +280,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     static final int TASK_BOOT = 3;
     static final int TASK_ENABLE_ALWAYS_ON = 4;
     static final int TASK_DISABLE_ALWAYS_ON = 5;
+    static final int TASK_AUTO_OFF = 6;
 
     // SE selected types
     public static final int SE_SELECTED_AID = 0x01;
@@ -564,6 +565,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     private VibrationEffect mVibrationEffect;
     private ISecureElementService mSEService;
     private final AlarmManager mAlarmManager;
+    private final NfcAutoOff mNfcAutoOff;
 
     private ScreenStateHelper mScreenStateHelper;
     private ForegroundUtils mForegroundUtils;
@@ -645,6 +647,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onRemoteEndpointDiscovered(TagEndpoint tag) {
         Log.d(TAG, "onRemoteEndpointDiscovered");
+        mNfcAutoOff.onUse();
         sendMessage(MSG_NDEF_TAG, tag);
     }
 
@@ -654,6 +657,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onHostCardEmulationActivated(int technology) {
         mCardEmulationActivated = true;
+        mNfcAutoOff.onUse();
         try {
             if (mNfcOemExtensionCallback != null) {
                 mNfcOemExtensionCallback.onCardEmulationActivated(mCardEmulationActivated);
@@ -696,6 +700,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onHostCardEmulationDeactivated(int technology) {
         mCardEmulationActivated = false;
+        mNfcAutoOff.onUse();
         try {
             if (mNfcOemExtensionCallback != null) {
                 mNfcOemExtensionCallback.onCardEmulationActivated(mCardEmulationActivated);
@@ -736,6 +741,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onRemoteFieldActivated() {
         mRfFieldActivated = true;
+        mNfcAutoOff.onUse();
         mLastFieldOnTimestamp = mNfcInjector.getWallClockMillis();
         mNfcInjector.ensureWatchdogMonitoring();
         try {
@@ -770,6 +776,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onRemoteFieldDeactivated() {
         mRfFieldActivated = false;
+        mNfcAutoOff.onUse();
         try {
             if (mNfcOemExtensionCallback != null) {
                 mNfcOemExtensionCallback.onRfFieldDetected(mRfFieldActivated);
@@ -833,6 +840,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onNfcTransactionEvent(byte[] aid, byte[] data, String seName) {
         byte[][] dataObj = {aid, data, seName.getBytes()};
+        mNfcAutoOff.onUse();
         sendMessage(MSG_TRANSACTION_EVENT, dataObj);
     }
 
@@ -860,6 +868,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                     },
                     50,
                     TimeUnit.MILLISECONDS);
+        mNfcAutoOff.onConditionsChanged();
     }
 
     private void restartStack() {
@@ -957,6 +966,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     @Override
     public void onEeListenActivated(boolean isActivated) {
         mEeListenActivated = isActivated;
+        mNfcAutoOff.onUse();
         mCardEmulationManager.onEeListenActivated(isActivated);
         try {
             if (mNfcOemExtensionCallback != null) {
@@ -1263,6 +1273,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         mLooper = mNfcInjector.getMainLooper();
         mHandler = new NfcServiceHandler(mLooper);
         mNfcEventLog = mNfcInjector.getNfcEventLog();
+        mNfcAutoOff = new NfcAutoOff(mContext, mNfcInjector, mHandler, new AutoOffHost());
 
         mNfcTagService = new TagService();
         mNfcAdapter = new NfcAdapterService();
@@ -1476,6 +1487,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
+                        mNfcAutoOff.onConditionsChanged();
                         if (mIsNfcUserRestricted == isNfcUserRestricted()) {
                             return;
                         }
@@ -1826,8 +1838,10 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
      */
     class EnableDisableTask extends AsyncTask<Integer, Void, Boolean> {
         int action;
+        boolean mAutoOff;
         @Override
         protected Boolean doInBackground(Integer... params) {
+            mAutoOff = params[0] == TASK_AUTO_OFF;
             // Quick check mState
             switch (mState.get()) {
                 case NfcAdapter.STATE_TURNING_OFF:
@@ -1914,6 +1928,9 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 case TASK_DISABLE_ALWAYS_ON:
                     result = disableAlwaysOnInternal();
                     break;
+                case TASK_AUTO_OFF:
+                    result = autoOffInternal(params[1]);
+                    break;
                 default:
                     break;
             }
@@ -1926,6 +1943,9 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         @Override
         protected void onPostExecute(Boolean result) {
             Log.d(TAG, "onPostExecute: result - " + result);
+            if (mAutoOff) {
+                mNfcAutoOff.onTurnOffDone();
+            }
             if (mNfcOemExtensionCallback != null) {
                 try {
                     if (action == TASK_BOOT)
@@ -2104,6 +2124,43 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
             return true;
         }
 
+        /** Turns NFC off as the user's switch does, unless it was used after the decision. */
+        boolean autoOffInternal(int generation) {
+            // Also a screen-on that MSG_APPLY_SCREEN_STATE has not handled yet.
+            if (!mNfcAutoOff.isCurrent(generation) || !isScreenOffState(
+                    mScreenStateHelper.checkScreenState(mCheckDisplayStateForScreenState))
+                    || !allowOemDisable()) {
+                return false;
+            }
+            synchronized (NfcService.this) {
+                // TURNING_OFF below skips disableInternal's own STATE_OFF check.
+                if (!mNfcAutoOff.isCurrent(generation) || mState.get() != NfcAdapter.STATE_ON
+                        || mIsRecovering) {
+                    Log.i(TAG, "autoOffInternal: used or changed meanwhile, NFC stays on");
+                    return false;
+                }
+                saveNfcOnSetting(false);
+                // Screen state updates check for this under the same lock and stop.
+                updateState(NfcAdapter.STATE_TURNING_OFF);
+            }
+            mNfcEventLog.logEvent(
+                    NfcEventProto.EventType.newBuilder()
+                            .setStateChange(NfcEventProto.NfcStateChange.newBuilder()
+                                    .setAppInfo(NfcEventProto.NfcAppInfo.newBuilder()
+                                            .setPackageName(mContext.getPackageName())
+                                            .setUid(Process.myUid())
+                                            .build())
+                                    .setEnabled(false)
+                                    .build())
+                            .build());
+            if (android.nfc.Flags.nfcStateChangeSecurityLogEventEnabled()) {
+                SecurityLog.writeEvent(SecurityLog.TAG_NFC_DISABLED);
+            }
+            action = TASK_DISABLE;
+            onOemPreExecute();
+            return disableInternal();
+        }
+
         /**
          * Disable all NFC adapter functions.
          * Does not toggle preferences.
@@ -2259,6 +2316,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 return;
             }
             mState.set(newState);
+            mNfcAutoOff.onNfcStateChanged();
             synchronized (NfcService.this) {
                 if (android.nfc.Flags.nfcEventListener() && mCardEmulationManager != null) {
                     mCardEmulationManager.onNfcStateChanged(newState);
@@ -2442,7 +2500,11 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     }
 
     public void enableNfc() {
-        saveNfcOnSetting(true);
+        synchronized (NfcService.this) {
+            // The auto-off task checks and saves under the same lock, so this switch wins.
+            saveNfcOnSetting(true);
+            mNfcAutoOff.onUse();
+        }
 
         new EnableDisableTask().execute(TASK_ENABLE);
     }
@@ -5491,6 +5553,54 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         }
     }
 
+    private static boolean isScreenOffState(int screenState) {
+        return screenState == ScreenStateHelper.SCREEN_STATE_OFF_LOCKED
+                || screenState == ScreenStateHelper.SCREEN_STATE_OFF_UNLOCKED;
+    }
+
+    /** Called on mHandler's thread. */
+    private final class AutoOffHost implements NfcAutoOff.Host {
+        @Override
+        public boolean isNfcOn() {
+            return isNfcEnabled();
+        }
+
+        @Override
+        public boolean canUserChangeNfc() {
+            return !isNfcUserChangeRestricted();
+        }
+
+        @Override
+        public boolean isScreenOff() {
+            return isScreenOffState(mScreenState) && isScreenOffState(
+                    mScreenStateHelper.checkScreenState(mCheckDisplayStateForScreenState));
+        }
+
+        @Override
+        public boolean isBusy() {
+            synchronized (NfcService.this) {
+                if (mIsRecovering) {
+                    return true;
+                }
+            }
+            synchronized (mObjectMapLock) {
+                if (!mObjectMap.isEmpty()) {
+                    return true;
+                }
+            }
+            return mRfFieldActivated || mCardEmulationActivated || mEeListenActivated
+                    || mTagConnected || mRoutingWakeLock.isHeld()
+                    || (mIsWlcEnabled && mNfcCharging.NfcChargingOnGoing)
+                    || (mRtUpdateScheduledTask != null && !mRtUpdateScheduledTask.isDone())
+                    || !mLooper.getQueue().isIdle();
+        }
+
+        @Override
+        public void turnOff(int generation) {
+            new EnableDisableTask().execute(TASK_AUTO_OFF, generation);
+        }
+    }
+
     final class NfcServiceHandler extends Handler {
         public NfcServiceHandler(Looper looper) {
             super(looper);
@@ -5916,6 +6026,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                             + ScreenStateHelper.screenStateToString(mScreenState));
 
                     synchronized (NfcService.this) {
+                        mNfcAutoOff.onScreenStateChanging();
                         // Disable delay polling when screen state changed
                         mPollDelayed = false;
                         mHandler.removeMessages(MSG_DELAY_POLLING);
@@ -5954,6 +6065,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                             mRoutingWakeLock.release();
                         }
                     }
+                    mNfcAutoOff.onScreenStateApplied();
                     break;
 
                 case MSG_TRANSACTION_EVENT:
@@ -6529,6 +6641,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
 
     private void executeOemOnTagConnectedCallback(boolean connected) {
         mTagConnected = connected;
+        mNfcAutoOff.onUse();
         if (mNfcOemExtensionCallback != null) {
             try {
                 mNfcOemExtensionCallback.onTagConnected(connected);
@@ -7022,6 +7135,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         pw.println("mState=" + stateToString(mState.get()));
         pw.println("mAlwaysOnState=" + stateToString(mAlwaysOnState));
         pw.println("mScreenState=" + ScreenStateHelper.screenStateToString(mScreenState));
+        mNfcAutoOff.dump(pw);
         pw.println("mIsSecureNfcEnabled=" + mIsSecureNfcEnabled);
         pw.println("mIsReaderOptionEnabled=" + mIsReaderOptionEnabled);
         pw.println("mIsAlwaysOnSupported=" + mIsAlwaysOnSupported);
