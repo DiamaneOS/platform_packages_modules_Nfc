@@ -32,7 +32,7 @@ final class NfcAutoOffRule {
         WAIT,
         /** Check again at {@link #checkAt()}, waking the device. */
         CHECK,
-        /** Check again at {@link #checkAt()} or when the device next wakes, if later. */
+        /** In use, see {@link #busyReason()}. Check again at {@link #checkAt()}, as CHECK does. */
         RETRY,
         TURN_OFF,
     }
@@ -40,7 +40,8 @@ final class NfcAutoOffRule {
     interface Conditions {
         boolean canUserChangeNfc();
         boolean isScreenOff();
-        boolean isBusy();
+        /** What is using NFC, null if nothing. */
+        String busyReason();
     }
 
     private long mTimeoutMs;
@@ -49,6 +50,7 @@ final class NfcAutoOffRule {
     private long mScreenChangedAt;
     private boolean mScreenOff;
     private long mCheckAt;
+    private String mBusyReason;
 
     void setTimeout(long timeoutMs, long now) {
         mTimeoutMs = Math.max(0, timeoutMs);
@@ -84,7 +86,12 @@ final class NfcAutoOffRule {
         return mCheckAt;
     }
 
+    String busyReason() {
+        return mBusyReason;
+    }
+
     Action decide(long now, Conditions c) {
+        mBusyReason = null;
         // The first decision that sees the screen off starts the countdown. A lock or an unlock
         // with the screen off keeps it.
         boolean screenOff = c.isScreenOff();
@@ -104,7 +111,8 @@ final class NfcAutoOffRule {
             mCheckAt = checkAt;
             return Action.CHECK;
         }
-        if (c.isBusy()) {
+        mBusyReason = c.busyReason();
+        if (mBusyReason != null) {
             mCheckAt = now + BUSY_RETRY_MS;
             return Action.RETRY;
         }

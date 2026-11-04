@@ -5577,22 +5577,23 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         }
 
         @Override
-        public boolean isBusy() {
+        public String busyReason() {
             synchronized (NfcService.this) {
                 if (mIsRecovering) {
-                    return true;
+                    return "recovering";
                 }
             }
-            synchronized (mObjectMapLock) {
-                if (!mObjectMap.isEmpty()) {
-                    return true;
-                }
+            if (mRfFieldActivated) return "field";
+            if (mCardEmulationActivated) return "card emulation";
+            if (mEeListenActivated) return "secure element";
+            // Not mObjectMap: a dispatched tag stays in it after it is lost, until NFC turns off.
+            if (mTagConnected) return "tag";
+            if (mRoutingWakeLock.isHeld()) return "routing";
+            if (mIsWlcEnabled && mNfcCharging.NfcChargingOnGoing) return "charging";
+            if (mRtUpdateScheduledTask != null && !mRtUpdateScheduledTask.isDone()) {
+                return "routing update";
             }
-            return mRfFieldActivated || mCardEmulationActivated || mEeListenActivated
-                    || mTagConnected || mRoutingWakeLock.isHeld()
-                    || (mIsWlcEnabled && mNfcCharging.NfcChargingOnGoing)
-                    || (mRtUpdateScheduledTask != null && !mRtUpdateScheduledTask.isDone())
-                    || !mLooper.getQueue().isIdle();
+            return mLooper.getQueue().isIdle() ? null : "queue";
         }
 
         @Override
@@ -5920,6 +5921,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                             mHandler.removeMessages(MSG_TAG_DEBOUNCE);
                             mHandler.sendEmptyMessageDelayed(MSG_TAG_DEBOUNCE, debounceTagMs);
                             tag.disconnect();
+                            executeOemOnTagConnectedCallback(false);
                             return;
                         } else {
                             synchronized (NfcService.this) {

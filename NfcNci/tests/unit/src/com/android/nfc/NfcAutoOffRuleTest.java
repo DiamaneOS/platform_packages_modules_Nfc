@@ -35,7 +35,7 @@ public class NfcAutoOffRuleTest {
     private final NfcAutoOffRule mRule = new NfcAutoOffRule();
     private boolean mChangeAllowed = true;
     private boolean mScreenOff = true;
-    private boolean mBusy;
+    private String mBusyReason;
     private final NfcAutoOffRule.Conditions mConditions = new NfcAutoOffRule.Conditions() {
         @Override
         public boolean canUserChangeNfc() {
@@ -48,8 +48,8 @@ public class NfcAutoOffRuleTest {
         }
 
         @Override
-        public boolean isBusy() {
-            return mBusy;
+        public String busyReason() {
+            return mBusyReason;
         }
     };
 
@@ -119,13 +119,15 @@ public class NfcAutoOffRuleTest {
     }
 
     @Test
-    public void retriesWithoutWakingWhileBusy() {
-        mBusy = true;
+    public void retriesWhileBusy() {
+        mBusyReason = "field";
         long now = ON_AT + TIMEOUT;
         assertEquals(RETRY, at(now));
         assertEquals(now + BUSY_RETRY_MS, mRule.checkAt());
-        mBusy = false;
+        assertEquals("field", mRule.busyReason());
+        mBusyReason = null;
         assertEquals(TURN_OFF, at(now + BUSY_RETRY_MS));
+        assertEquals(null, mRule.busyReason());
     }
 
     @Test

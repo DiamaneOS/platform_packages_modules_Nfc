@@ -63,7 +63,6 @@ final class NfcAutoOff {
     // Handler thread only.
     private ContentObserver mObserver;
     private long mAlarmAt = -1;
-    private boolean mAlarmWakes;
     private boolean mTurningOff;
     private int mTurnOffGeneration;
 
@@ -136,6 +135,7 @@ final class NfcAutoOff {
         pw.println("NfcAutoOff: timeoutMs=" + mRule.timeoutMs() + " active=" + mRule.isActive()
                 + " deadlineInMs=" + (mRule.deadline() - now)
                 + " alarmInMs=" + (mAlarmAt < 0 ? "none" : mAlarmAt - now)
+                + " busy=" + mRule.busyReason()
                 + " turningOff=" + mTurningOff);
     }
 
@@ -189,8 +189,11 @@ final class NfcAutoOff {
         int generation = mGeneration.get();
         switch (mRule.decide(now(), mHost)) {
             case WAIT -> cancelAlarm();
-            case CHECK -> setAlarm(mRule.checkAt(), true);
-            case RETRY -> setAlarm(mRule.checkAt(), false);
+            case CHECK -> setAlarm(mRule.checkAt());
+            case RETRY -> {
+                Log.i(TAG, "in use: " + mRule.busyReason() + ", checking again");
+                setAlarm(mRule.checkAt());
+            }
             case TURN_OFF -> turnOff(generation);
         }
     }
@@ -204,20 +207,16 @@ final class NfcAutoOff {
         mHost.turnOff(generation);
     }
 
-    private void setAlarm(long at, boolean wakes) {
+    private void setAlarm(long at) {
         // An earlier alarm only checks again, so keep it: saves binder calls while a field flaps.
-        if (mAlarmAt >= 0 && mAlarmAt <= at && (mAlarmWakes || !wakes)) {
+        if (mAlarmAt >= 0 && mAlarmAt <= at) {
             return;
         }
-        if (wakes) {
-            // Exact, since a window fires late. As a core UID it also fires on time in Doze.
-            mAlarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, TAG, mAlarmListener,
-                    mHandler);
-        } else {
-            mAlarmManager.set(AlarmManager.ELAPSED_REALTIME, at, TAG, mAlarmListener, mHandler);
-        }
+        // Exact, since a window fires late. A non-waking alarm waits for the screen to turn on,
+        // and then the countdown stops. As a core UID it also fires on time in Doze.
+        mAlarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, at, TAG, mAlarmListener,
+                mHandler);
         mAlarmAt = at;
-        mAlarmWakes = wakes;
     }
 
     private void cancelAlarm() {

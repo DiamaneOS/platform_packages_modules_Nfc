@@ -402,10 +402,21 @@ public final class NfcServiceTest {
         when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(61_000L);
         alarm.onAlarm();
         mLooper.dispatchAll();
-        verify(mAlarmManager).set(eq(AlarmManager.ELAPSED_REALTIME),
+        verify(mAlarmManager).setExact(eq(AlarmManager.ELAPSED_REALTIME_WAKEUP),
                 eq(61_000L + NfcAutoOffRule.BUSY_RETRY_MS), anyString(), any(), any(Handler.class));
         verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
         verify(mDeviceHost, never()).deinitialize();
+    }
+
+    @Test
+    public void testAutoOff_turnsOffWithALostTagStillInTheObjectMap() throws Exception {
+        AlarmManager.OnAlarmListener alarm = enableWithAutoOffAt(1_000, 60_000);
+        mNfcService.mObjectMap.put(1, new Object());
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(61_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
     }
 
     @Test
